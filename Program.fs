@@ -1,9 +1,9 @@
 ﻿open System
 
 type Expression =
-    | Symbol of string
-    | Number of int
-    | Composite of (Expression * Expression)
+    | Sym of string
+    | Num of int
+    | Cons of (Expression * Expression)
 
 type Token =
     | Symbolic of string
@@ -25,8 +25,8 @@ let tokenize source =
 
 let parse tokens =
     let rec parse' = function
-        | Numeric n :: t -> n |> int |> Number, t
-        | Symbolic s :: t -> Symbol s, t
+        | Numeric n :: t -> n |> int |> Num, t
+        | Symbolic s :: t -> Sym s, t
         | Delimiter '(' :: t -> let lst, t' = parseList t in lst, t'
         | Delimiter _ :: _ -> failwith "Unexpected character"
         | End :: t -> failwith "Expected token"
@@ -36,10 +36,10 @@ let parse tokens =
         match tokens' with
         | Delimiter '.' :: t ->
             match parse' t with
-            | tail, (Delimiter ')' :: tokens'') ->  Composite (head, tail), tokens''
+            | tail, (Delimiter ')' :: tokens'') ->  Cons (head, tail), tokens''
             | _ -> failwith "Unexpected expression following dotted pair"
-        | Delimiter ')' :: t -> Composite (head, Symbol "NIL"), t
-        | h :: t -> let lst, t' = parseList t in Composite (head, lst), t'
+        | Delimiter ')' :: t -> Cons (head, Sym "NIL"), t
+        | h :: t -> let lst, t' = parseList t in Cons (head, lst), t'
         | [] -> failwith "Unexpected end of list expression"
     match tokens |> List.ofSeq |> parse' with
     | parsed, [End] -> parsed
@@ -47,44 +47,45 @@ let parse tokens =
 
 let print expression =
     let rec print' out comp = function
-        | Symbol s -> s :: out
-        | Number n -> sprintf "%i" n :: out
-        | Composite (h, Composite c) ->
+        | Sym s -> s :: out
+        | Num n -> sprintf "%i" n :: out
+        | Cons (h, Cons c) ->
             let p = print' [] false h
-            let p' = print' [] true (Composite c)
+            let p' = print' [] true (Cons c)
             p' @ " " :: p @ [(if comp then "" else "(")] @ out
-        | Composite (h, Symbol "NIL") -> let p = print' [] false h in (")" :: p @ [(if comp then "" else "(")] @ out)
-        | Composite (h, d) -> let p, p' = print' [] false h, print' [] false d in ")" :: p' @ ["."] @ p @ [(if comp then "" else "(")] @ out
+        | Cons (h, Sym "NIL") -> let p = print' [] false h in (")" :: p @ [(if comp then "" else "(")] @ out)
+        | Cons (h, d) -> let p, p' = print' [] false h, print' [] false d in ")" :: p' @ ["."] @ p @ [(if comp then "" else "(")] @ out
     print' [] false expression |> Seq.rev |> String.Concat
 
 let exec exp args =
     let rec exec' s e c d =
         printfn "DEBUG: S=%s E=%s C=%s D=%s" (print s) (print e) (print c) (print d)
+        let rec locate i = function Cons (e', e) -> (if i > 1 then locate (i - 1) e else e') | _ -> failwith "Invalid environment state"
+        let rplaca e v = e
         match (s, e, c, d) with 
-        | s, e, Composite (Number 1 (* LD *), c), d -> exec' s e c d // TODO
-        | s, e, Composite (Number 2 (* LDC *), Composite (x, c)), d -> exec' (Composite (x, s)) e c d
-        | s, e, Composite (Number 3 (* LDF *), c), d -> exec' s e c d // TODO
-        | s, e, Composite (Number 4 (* AP *), c), d -> exec' s e c d // TODO
-        | s, e, Composite (Number 5 (* RTN *), c), d -> exec' s e c d // TODO
-        | s, e, Composite (Number 6 (* DUM *), c), d -> exec' s e c d // TODO
-        | s, e, Composite (Number 7 (* RAP *), c), d -> exec' s e c d // TODO
-        | s, e, Composite (Number 8 (* SEL *), c), d -> exec' s e c d // TODO
-        | s, e, Composite (Number 9 (* JOIN *), c), d -> exec' s e c d // TODO
-        | Composite (Composite (x, _), s), e, Composite (Number 10 (* CAR *), c), d -> exec' (Composite (x, s)) e c d
-        | Composite (Composite (_, x), s), e, Composite (Number 11 (* CDR *), c), d -> exec' (Composite (x, s)) e c d
-        | Composite (x, s), e, Composite (Number 12 (* ATOM *), c), d -> exec' (Composite (Symbol (match x with Symbol _ | Number _ -> "T" | _ -> "F"), s)) e c d
-        | Composite (h, Composite (t, s)), e, Composite (Number 13 (* CONS *), c), d -> exec' (Composite (Composite (h, t), s)) e c d
-        | Composite (x, Composite (y, s)), e, Composite (Number 14 (* EQ *), c), d -> exec' (Composite (Symbol (if y = x then "T" else "F"), s)) e c d
-        | Composite (Number x, Composite (Number y, s)), e, Composite (Number 15 (* ADD *), c), d -> exec' (Composite (Number (y + x), s)) e c d
-        | Composite (Number x, Composite (Number y, s)), e, Composite (Number 16 (* SUB *), c), d -> exec' (Composite (Number (y - x), s)) e c d
-        | Composite (Number x, Composite (Number y, s)), e, Composite (Number 17 (* MUL *), c), d -> exec' (Composite (Number (y * x), s)) e c d
-        | Composite (Number x, Composite (Number y, s)), e, Composite (Number 18 (* DIV *), c), d -> exec' (Composite (Number (y / x), s)) e c d
-        | Composite (Number x, Composite (Number y, s)), e, Composite (Number 19 (* REM *), c), d -> exec' (Composite (Number (y % x), s)) e c d
-        | Composite (Number x, Composite (Number y, s)), e, Composite (Number 20 (* LEQ *), c), d -> exec' (Composite (Symbol (if y <= x then "T" else "F"), s)) e c d
-        | s, e, Composite (Number 21 (* STOP *), c), d -> exec' s e c d // TODO
-        | s, e, Symbol "NIL", d -> s
+        | s, e, Cons (Num 1 (* LD *), Cons (Cons (Num n, Num m), c)), d -> exec' (Cons (locate m (locate n e), s)) e c d
+        | s, e, Cons (Num 2 (* LDC *), Cons (x, c)), d -> exec' (Cons (x, s)) e c d
+        | s, e, Cons (Num 3 (* LDF *), Cons (c', c)), d -> exec' (Cons (Cons (c', e), s)) e c d
+        | Cons (Cons (c', e'), Cons (v, s)), e, Cons (Num 4 (* AP *), c), d -> exec' (Sym "NIL") (Cons (v, e')) c' (Cons (s, Cons (e, Cons (c, d))))
+        | r, _, Cons (Num 5 (* RTN *), Sym "NIL"), (Cons (s, Cons (e, Cons (c, d)))) -> exec' (Cons (r, s)) e c d
+        | s, e, Cons (Num 6 (* DUM *), c), d -> exec' s (Cons (Sym "NIL", e)) c d
+        | (Cons (Cons (c', e'), Cons (v, s))), (Cons (Sym "NIL", e)), Cons (Num 7 (* RAP *), c), d -> exec' (Sym "NIL") (rplaca e v) c' (Cons (s, Cons (e, Cons (c, d))))
+        | Cons (x, s), e, Cons (Num 8 (* SEL *), Cons (t, Cons (f, c))), d -> exec' s e (if x = Sym "T" then t else f) (Cons (c, d))
+        | s, e, Cons (Num 9 (* JOIN *), Sym "NIL"), (Cons (c, d)) -> exec' s e c d
+        | Cons (Cons (x, _), s), e, Cons (Num 10 (* CAR *), c), d -> exec' (Cons (x, s)) e c d
+        | Cons (Cons (_, x), s), e, Cons (Num 11 (* CDR *), c), d -> exec' (Cons (x, s)) e c d
+        | Cons (x, s), e, Cons (Num 12 (* ATOM *), c), d -> exec' (Cons (Sym (match x with Sym _ | Num _ -> "T" | _ -> "F"), s)) e c d
+        | Cons (h, Cons (t, s)), e, Cons (Num 13 (* CONS *), c), d -> exec' (Cons (Cons (h, t), s)) e c d
+        | Cons (x, Cons (y, s)), e, Cons (Num 14 (* EQ *), c), d -> exec' (Cons (Sym (if y = x then "T" else "F"), s)) e c d
+        | Cons (Num x, Cons (Num y, s)), e, Cons (Num 15 (* ADD *), c), d -> exec' (Cons (Num (y + x), s)) e c d
+        | Cons (Num x, Cons (Num y, s)), e, Cons (Num 16 (* SUB *), c), d -> exec' (Cons (Num (y - x), s)) e c d
+        | Cons (Num x, Cons (Num y, s)), e, Cons (Num 17 (* MUL *), c), d -> exec' (Cons (Num (y * x), s)) e c d
+        | Cons (Num x, Cons (Num y, s)), e, Cons (Num 18 (* DIV *), c), d -> exec' (Cons (Num (y / x), s)) e c d
+        | Cons (Num x, Cons (Num y, s)), e, Cons (Num 19 (* REM *), c), d -> exec' (Cons (Num (y % x), s)) e c d
+        | Cons (Num x, Cons (Num y, s)), e, Cons (Num 20 (* LEQ *), c), d -> exec' (Cons (Sym (if y <= x then "T" else "F"), s)) e c d
+        | Cons (r, _), _, Cons (Num 21 (* STOP *), Sym "NIL"), _ -> r
         | _ -> failwith "Invalid machine state"
-    exec' (Composite (args, Symbol "NIL")) (Symbol "NIL") exp (Symbol "NIL")
+    exec' (Cons (args, Sym "NIL")) (Sym "NIL") exp (Sym "NIL")
 
 let run exp args = exec (exp |> tokenize |> parse) (args |> tokenize |> parse)
 
@@ -108,24 +109,24 @@ let testExec exp args expected =
     let result = run exp args |> print
     if result <> expected then printfn "!!!ERROR!!!\nPROGRAM: %s\nARGUMENTS: %s\nEXPECTED: %s\nRESULT: %s" exp args expected result
 
-testExec "(2 123 2 7)" "42" "(7 123 42)" // LDC
-testExec "(10)" "(7 42 123)" "(7)" // CAR
-testExec "(11)" "(7 42 123)" "((42 123))" // CDR
-testExec "(12)" "7" "(T)" // ATOM
-testExec "(12)" "FOO" "(T)" // ATOM
-testExec "(12)" "(FOO BAR)" "(F)" // ATOM
-testExec "(2 123 2 7 13)" "42" "((7.123) 42)" // CONS
-testExec "(2 123 2 7 14)" "42" "(F 42)" // EQ
-testExec "(2 7 2 7 14)" "42" "(T 42)" // EQ
-testExec "(2 FOO 2 BAR 14)" "42" "(F 42)" // EQ
-testExec "(2 FOO 2 FOO 14)" "42" "(T 42)" // EQ
-testExec "(2 123 2 7 15)" "42" "(130 42)" // ADD
-testExec "(2 123 2 7 16)" "42" "(116 42)" // SUB
-testExec "(2 123 2 7 17)" "42" "(861 42)" // MUL
-testExec "(2 123 2 7 18)" "42" "(17 42)" // DIV
-testExec "(2 123 2 7 19)" "42" "(4 42)" // REM
-testExec "(2 123 2 7 20)" "42" "(F 42)" // LEQ
-testExec "(2 7 2 123 20)" "42" "(T 42)" // LEQ
-testExec "(2 7 2 7 20)" "42" "(T 42)" // LEQ
+testExec "(2 123 2 7 21)" "42" "(7 123 42)" // LDC
+testExec "(10 21)" "(7 42 123)" "7" // CAR
+testExec "(11 21)" "(7 42 123)" "(42 123)" // CDR
+testExec "(12 21)" "7" "T" // ATOM
+testExec "(12 21)" "FOO" "T" // ATOM
+testExec "(12 21)" "(FOO BAR)" "F" // ATOM
+testExec "(2 123 2 7 13 21)" "42" "(7.123)" // CONS
+testExec "(2 123 2 7 14 21)" "42" "F" // EQ
+testExec "(2 7 2 7 14 21)" "42" "T" // EQ
+testExec "(2 FOO 2 BAR 14 21)" "42" "F" // EQ
+testExec "(2 FOO 2 FOO 14 21)" "42" "T" // EQ
+testExec "(2 123 2 7 15 21)" "42" "130" // ADD
+testExec "(2 123 2 7 16 21)" "42" "116" // SUB
+testExec "(2 123 2 7 17 21)" "42" "861" // MUL
+testExec "(2 123 2 7 18 21)" "42" "17" // DIV
+testExec "(2 123 2 7 19 21)" "42" "4" // REM
+testExec "(2 123 2 7 20 21)" "42" "F" // LEQ
+testExec "(2 7 2 123 20 21)" "42" "T" // LEQ
+testExec "(2 7 2 7 20 21)" "42" "T" // LEQ
 
 Console.ReadLine () |> ignore
