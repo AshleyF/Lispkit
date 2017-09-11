@@ -1,10 +1,6 @@
 ﻿open System
 
-type Cell = { mutable Left: Expression; Right: Expression }
-and Expression =
-    | Sym of string
-    | Num of int
-    | Cons of Cell
+// tokenizer
 
 type Token =
     | Symbolic of string
@@ -23,6 +19,14 @@ let tokenize source =
         | c :: cs -> tokenize' (Delimiter c :: tokens) cs
         | [] -> (End :: tokens) |> Seq.rev
     source |> List.ofSeq |> skip |> tokenize' []
+
+// parser
+
+type Cell = { mutable Left: Expression; Right: Expression } // this uglyness (record with `mutable Left`) is needed to allow in-place environment update
+and Expression =
+    | Sym of string
+    | Num of int
+    | Cons of Cell
 
 let parse tokens =
     let rec parse' = function
@@ -46,6 +50,8 @@ let parse tokens =
     | parsed, [End] -> parsed
     | _ -> failwith "Unexpected trailing tokens"
 
+// pretty printer
+
 let print expression =
     let rec print' i out comp exp =
         let j = i - 1 // TODO
@@ -61,6 +67,8 @@ let print expression =
             | Cons { Left = h; Right = d } -> let p, p' = print' j [] false h, print' j [] false d in ")" :: p' @ ["."] @ p @ [(if comp then "" else "(")] @ out
         else "..." :: out
     print' 10000 [] false expression |> Seq.rev |> String.Concat
+
+// SECD machine
 
 let exec exp args =
     let rec exec' s e c d =
@@ -93,6 +101,8 @@ let exec exp args =
     exec' (Cons { Left = args; Right = Sym "NIL" }) (Sym "NIL") exp (Sym "NIL")
 
 let run exp args = exec (exp |> tokenize |> parse) (args |> tokenize |> parse)
+
+// tests
 
 let testParse source =
     let tokens = tokenize source
@@ -186,6 +196,8 @@ testCompiler "(IF (QUOTE A) (QUOTE B) (QUOTE C))" "(2 A 8 (2 B 9) (2 C 9) 4 21)"
 
 // ultimate test, compile the compiler - metecircularity baby!
 testCompiler compilerSource compilerCode
+
+// REPL
 
 let rec repl output = 
     printf "%s\n> " output 
