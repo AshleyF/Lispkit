@@ -1,9 +1,10 @@
 ﻿open System
 
-type Expression =
+type Cell = { mutable Left: Expression; Right: Expression }
+and Expression =
     | Sym of string
     | Num of int
-    | Cons of (Expression * Expression)
+    | Cons of Cell
 
 type Token =
     | Symbolic of string
@@ -28,7 +29,7 @@ let parse tokens =
         | Numeric n :: t -> n |> int |> Num, t
         | Symbolic s :: t -> Sym s, t
         | Delimiter '(' :: t -> let lst, t' = parseList t in lst, t'
-        | Delimiter _ :: _ -> failwith "Unexpected character"
+        | Delimiter d :: _ -> failwith "Unexpected character"
         | End :: t -> failwith "Expected token"
         | [] -> failwith "Expected single expression"
     and parseList tokens =
@@ -36,56 +37,60 @@ let parse tokens =
         match tokens' with
         | Delimiter '.' :: t ->
             match parse' t with
-            | tail, (Delimiter ')' :: tokens'') ->  Cons (head, tail), tokens''
+            | tail, (Delimiter ')' :: tokens'') ->  Cons { Left = head; Right = tail }, tokens''
             | _ -> failwith "Unexpected expression following dotted pair"
-        | Delimiter ')' :: t -> Cons (head, Sym "NIL"), t
-        | h :: t -> let lst, t' = parseList t in Cons (head, lst), t'
+        | Delimiter ')' :: t -> Cons { Left = head; Right = Sym "NIL" }, t
+        | h :: t -> let lst, t' = parseList t in Cons { Left = head; Right = lst }, t'
         | [] -> failwith "Unexpected end of list expression"
     match tokens |> List.ofSeq |> parse' with
     | parsed, [End] -> parsed
     | _ -> failwith "Unexpected trailing tokens"
 
 let print expression =
-    let rec print' out comp = function
-        | Sym s -> s :: out
-        | Num n -> sprintf "%i" n :: out
-        | Cons (h, Cons c) ->
-            let p = print' [] false h
-            let p' = print' [] true (Cons c)
-            p' @ " " :: p @ [(if comp then "" else "(")] @ out
-        | Cons (h, Sym "NIL") -> let p = print' [] false h in (")" :: p @ [(if comp then "" else "(")] @ out)
-        | Cons (h, d) -> let p, p' = print' [] false h, print' [] false d in ")" :: p' @ ["."] @ p @ [(if comp then "" else "(")] @ out
-    print' [] false expression |> Seq.rev |> String.Concat
+    let rec print' i out comp exp =
+        let j = i - 1 // TODO
+        if i > 0 then
+            match exp with
+            | Sym s -> s :: out
+            | Num n -> sprintf "%i" n :: out
+            | Cons { Left = h; Right = Cons c } ->
+                let p = print' j [] false h
+                let p' = print' j [] true (Cons c)
+                p' @ " " :: p @ [(if comp then "" else "(")] @ out
+            | Cons { Left = h; Right = Sym "NIL" } -> let p = print' j [] false h in (")" :: p @ [(if comp then "" else "(")] @ out)
+            | Cons { Left = h; Right = d } -> let p, p' = print' j [] false h, print' j [] false d in ")" :: p' @ ["."] @ p @ [(if comp then "" else "(")] @ out
+        else "..." :: out
+    print' 10000 [] false expression |> Seq.rev |> String.Concat
 
 let exec exp args =
     let rec exec' s e c d =
-        printfn "DEBUG: S=%s E=%s C=%s D=%s" (print s) (print e) (print c) (print d)
-        let rec locate i = function Cons (e', e) -> (if i > 1 then locate (i - 1) e else e') | _ -> failwith "Invalid environment state"
-        let rplaca e v = e
+        // printfn "DEBUG: S=%s E=%s C=%s D=%s" (print s) (print e) (print c) (print d)
+        let rec nth i = function Cons { Left = e'; Right = e } -> (if i > 0 then nth (i - 1) e else e') | _ -> failwith "Invalid environment state"
+        let rplaca e v = match e with Cons e' -> e'.Left <- v; Cons e' | _ -> failwith "Invalid environment" // note: this is the *only* mutation
         match (s, e, c, d) with 
-        | s, e, Cons (Num 1 (* LD *), Cons (Cons (Num n, Num m), c)), d -> exec' (Cons (locate m (locate n e), s)) e c d
-        | s, e, Cons (Num 2 (* LDC *), Cons (x, c)), d -> exec' (Cons (x, s)) e c d
-        | s, e, Cons (Num 3 (* LDF *), Cons (c', c)), d -> exec' (Cons (Cons (c', e), s)) e c d
-        | Cons (Cons (c', e'), Cons (v, s)), e, Cons (Num 4 (* AP *), c), d -> exec' (Sym "NIL") (Cons (v, e')) c' (Cons (s, Cons (e, Cons (c, d))))
-        | r, _, Cons (Num 5 (* RTN *), Sym "NIL"), (Cons (s, Cons (e, Cons (c, d)))) -> exec' (Cons (r, s)) e c d
-        | s, e, Cons (Num 6 (* DUM *), c), d -> exec' s (Cons (Sym "NIL", e)) c d
-        | (Cons (Cons (c', e'), Cons (v, s))), (Cons (Sym "NIL", e)), Cons (Num 7 (* RAP *), c), d -> exec' (Sym "NIL") (rplaca e v) c' (Cons (s, Cons (e, Cons (c, d))))
-        | Cons (x, s), e, Cons (Num 8 (* SEL *), Cons (t, Cons (f, c))), d -> exec' s e (if x = Sym "T" then t else f) (Cons (c, d))
-        | s, e, Cons (Num 9 (* JOIN *), Sym "NIL"), (Cons (c, d)) -> exec' s e c d
-        | Cons (Cons (x, _), s), e, Cons (Num 10 (* CAR *), c), d -> exec' (Cons (x, s)) e c d
-        | Cons (Cons (_, x), s), e, Cons (Num 11 (* CDR *), c), d -> exec' (Cons (x, s)) e c d
-        | Cons (x, s), e, Cons (Num 12 (* ATOM *), c), d -> exec' (Cons (Sym (match x with Sym _ | Num _ -> "T" | _ -> "F"), s)) e c d
-        | Cons (h, Cons (t, s)), e, Cons (Num 13 (* CONS *), c), d -> exec' (Cons (Cons (h, t), s)) e c d
-        | Cons (x, Cons (y, s)), e, Cons (Num 14 (* EQ *), c), d -> exec' (Cons (Sym (if y = x then "T" else "F"), s)) e c d
-        | Cons (Num x, Cons (Num y, s)), e, Cons (Num 15 (* ADD *), c), d -> exec' (Cons (Num (y + x), s)) e c d
-        | Cons (Num x, Cons (Num y, s)), e, Cons (Num 16 (* SUB *), c), d -> exec' (Cons (Num (y - x), s)) e c d
-        | Cons (Num x, Cons (Num y, s)), e, Cons (Num 17 (* MUL *), c), d -> exec' (Cons (Num (y * x), s)) e c d
-        | Cons (Num x, Cons (Num y, s)), e, Cons (Num 18 (* DIV *), c), d -> exec' (Cons (Num (y / x), s)) e c d
-        | Cons (Num x, Cons (Num y, s)), e, Cons (Num 19 (* REM *), c), d -> exec' (Cons (Num (y % x), s)) e c d
-        | Cons (Num x, Cons (Num y, s)), e, Cons (Num 20 (* LEQ *), c), d -> exec' (Cons (Sym (if y <= x then "T" else "F"), s)) e c d
-        | Cons (r, _), _, Cons (Num 21 (* STOP *), Sym "NIL"), _ -> r
+        | s, e, Cons { Left = Num 1 (* LD *); Right = Cons { Left = Cons { Left = Num n; Right = Num m }; Right = c }}, d -> exec' (Cons { Left = nth m (nth n e); Right = s }) e c d
+        | s, e, Cons { Left = Num 2 (* LDC *); Right = Cons { Left = x; Right = c }}, d -> exec' (Cons { Left = x; Right = s }) e c d
+        | s, e, Cons { Left = Num 3 (* LDF *); Right = Cons { Left = c'; Right = c }}, d -> exec' (Cons { Left = Cons { Left = c'; Right = e }; Right = s }) e c d
+        | Cons { Left = Cons { Left = c'; Right = e' }; Right = Cons { Left = v; Right = s }}, e, Cons { Left = Num 4 (* AP *); Right = c }, d -> exec' (Sym "NIL") (Cons { Left = v; Right = e' }) c' (Cons { Left = s; Right = Cons { Left = e; Right = Cons { Left = c; Right = d }}})
+        | Cons { Left = r; Right = Sym "NIL" }, _, Cons { Left = Num 5 (* RTN *); Right = Sym "NIL" }, (Cons { Left = s; Right = Cons { Left = e; Right = Cons { Left = c; Right = d }}}) -> exec' (Cons { Left = r; Right = s }) e c d
+        | s, e, Cons { Left = Num 6 (* DUM *); Right = c }, d -> exec' s (Cons { Left = Sym "NIL"; Right = e }) c d
+        | (Cons { Left = Cons { Left = c'; Right = e' }; Right = Cons { Left = v; Right = s }}), (Cons { Left = Sym "NIL"; Right = e }), Cons { Left = Num 7 (* RAP *); Right = c }, d -> exec' (Sym "NIL") (rplaca e' v) c' (Cons { Left = s; Right = Cons { Left = e; Right = Cons { Left = c; Right = d }}})
+        | Cons { Left = x; Right = s }, e, Cons { Left = Num 8 (* SEL *); Right = Cons { Left = t; Right = Cons { Left = f; Right = c }}}, d -> exec' s e (if x = Sym "T" then t else f) (Cons { Left = c; Right = d })
+        | s, e, Cons { Left = Num 9 (* JOIN *); Right = Sym "NIL" }, (Cons { Left = c; Right = d }) -> exec' s e c d
+        | Cons { Left = Cons { Left = x; Right = _ }; Right = s }, e, Cons { Left = Num 10 (* CAR *); Right = c }, d -> exec' (Cons { Left = x; Right = s }) e c d
+        | Cons { Left = Cons { Left = _; Right = x }; Right = s }, e, Cons { Left = Num 11 (* CDR *); Right = c }, d -> exec' (Cons { Left = x; Right = s }) e c d
+        | Cons { Left = x; Right = s }, e, Cons { Left = Num 12 (* ATOM *); Right = c }, d -> exec' (Cons { Left = Sym (match x with Sym _ | Num _ -> "T" | _ -> "F"); Right = s }) e c d
+        | Cons { Left = h; Right = Cons { Left = t; Right = s }}, e, Cons { Left = Num 13 (* CONS *); Right = c }, d -> exec' (Cons { Left = Cons { Left = h; Right = t }; Right = s }) e c d
+        | Cons { Left = x; Right = Cons { Left = y; Right = s }}, e, Cons { Left = Num 14 (* EQ *); Right = c }, d -> exec' (Cons { Left = Sym (if y = x then "T" else "F"); Right = s }) e c d
+        | Cons { Left = Num x; Right = Cons { Left = Num y; Right = s }}, e, Cons { Left = Num 15 (* ADD *); Right = c }, d -> exec' (Cons { Left = Num (y + x); Right = s }) e c d
+        | Cons { Left = Num x; Right = Cons { Left = Num y; Right = s }}, e, Cons { Left = Num 16 (* SUB *); Right = c }, d -> exec' (Cons { Left = Num (y - x); Right = s }) e c d
+        | Cons { Left = Num x; Right = Cons { Left = Num y; Right = s }}, e, Cons { Left = Num 17 (* MUL *); Right = c }, d -> exec' (Cons { Left = Num (y * x); Right = s }) e c d
+        | Cons { Left = Num x; Right = Cons { Left = Num y; Right = s }}, e, Cons { Left = Num 18 (* DIV *); Right = c }, d -> exec' (Cons { Left = Num (y / x); Right = s }) e c d
+        | Cons { Left = Num x; Right = Cons { Left = Num y; Right = s }}, e, Cons { Left = Num 19 (* REM *); Right = c }, d -> exec' (Cons { Left = Num (y % x); Right = s }) e c d
+        | Cons { Left = Num x; Right = Cons { Left = Num y; Right = s }}, e, Cons { Left = Num 20 (* LEQ *); Right = c }, d -> exec' (Cons { Left = Sym (if y <= x then "T" else "F"); Right = s }) e c d
+        | Cons { Left = r; Right = _ }, _, Cons { Left = Num 21 (* STOP *); Right = Sym "NIL" }, _ -> r
         | _ -> failwith "Invalid machine state"
-    exec' (Cons (args, Sym "NIL")) (Sym "NIL") exp (Sym "NIL")
+    exec' (Cons { Left = args; Right = Sym "NIL" }) (Sym "NIL") exp (Sym "NIL")
 
 let run exp args = exec (exp |> tokenize |> parse) (args |> tokenize |> parse)
 
@@ -94,7 +99,7 @@ let testParse source =
     let expression = parse tokens
     let printed = print expression
     if printed <> source then 
-        printfn "!!!ERROR!!!\nSOURCE: %s\nTOKENS: %A\nEXPRESSION: %A\nPRINTED: %s\n" source (List.ofSeq tokens) expression printed
+        printfn "!!!PARSER TEST FAILURE!!!\nSOURCE: %s\nTOKENS: %A\nEXPRESSION: %A\nPRINTED: %s\n" source (List.ofSeq tokens) expression printed
 
 testParse "123"
 testParse "FOO"
@@ -107,9 +112,9 @@ testParse "(A (B.C) (D E F) 123)"
 
 let testExec exp args expected =
     let result = run exp args |> print
-    if result <> expected then printfn "!!!ERROR!!!\nPROGRAM: %s\nARGUMENTS: %s\nEXPECTED: %s\nRESULT: %s" exp args expected result
+    if result <> expected then printfn "!!!SECD MACHINE TEST FAILURE!!!\nPROGRAM: %s\nARGUMENTS: %s\nEXPECTED: %s\nRESULT: %s" exp args expected result
 
-testExec "(2 123 2 7 21)" "42" "(7 123 42)" // LDC
+testExec "(2 123 21)" "42" "123" // LDC
 testExec "(10 21)" "(7 42 123)" "7" // CAR
 testExec "(11 21)" "(7 42 123)" "(42 123)" // CDR
 testExec "(12 21)" "7" "T" // ATOM
@@ -128,5 +133,63 @@ testExec "(2 123 2 7 19 21)" "42" "4" // REM
 testExec "(2 123 2 7 20 21)" "42" "F" // LEQ
 testExec "(2 7 2 123 20 21)" "42" "T" // LEQ
 testExec "(2 7 2 7 20 21)" "42" "T" // LEQ
+testExec "(21)" "(B C)" "(B C)" // (STOP)
+testExec "(2 A 21)" "42" "A" // (LDC A STOP)
+testExec "(2 A 12 21)" "42" "T" // (LDC A ATOM STOP)
+testExec "(2 (A) 12 21)" "42" "F" // (LDC (A) ATOM STOP)
+testExec "(2 (A) 10 21)" "42" "A" // (LDC (A) CAR STOP)
+testExec "(2 A 2 B 13 21)" "42" "(B.A)" // (LDC A LDC B CONS STOP)
+testExec "(2 A 2 B 14 21)" "42" "F" // (LDC A LDC B EQ STOP)
+testExec "(2 A 2 A 14 21)" "42" "T" // (LDC A LDC A EQ STOP)
+testExec "(2 T 8 (2 A 21) (2 B 21))" "42" "A" // (LDC T SEL (LDC A STOP) (LDC B STOP))
+testExec "(2 F 8 (2 A 21) (2 B 21))" "42" "B" // (LDC F SEL (LDC A STOP) (LDC B STOP))
+testExec "(2 T 8 (2 A 9) (2 B 9) 21)" "42" "A" // (LDC T SEL (LDC A JOIN) (LDC B JOIN) STOP)
+testExec "(2 F 8 (2 A 9) (2 B 9) 21)" "42" "B" // (LDC F SEL (LDC A JOIN) (LDC B JOIN) STOP)
+testExec "(3 (2 A) 21)" "((B C))" "((2 A))" // (LDF (LDC A) STOP)
+testExec "(3 (2 A 21) 4)" "((B C))" "A" // (LDF (LDC A STOP) AP)
+testExec "(3 (2 A 5) 4 21)" "((B C))" "A" // (LDF (LDC A RTN) AP STOP)
+testExec "(3 (1 (0.0) 21) 4 21)" "((B C))" "(B C)" // (LDF (LD (0.0) RTN) AP STOP)
+testExec "(3 (1 (0.1) 21) 4 21)" "((B C) (D E))" "(D E)" // (LDF (LD (0.1) RTN) AP STOP)
+testExec "(3 (6 1 (1.0) 21) 4 21)" "((B C))" "(B C)" // (LDF (DUM LD (1.0) RTN) AP STOP)
+testExec "(3 (6 1 (1.1) 21) 4 21)" "((B C) (D E))" "(D E)" // (LDF (DUM LD (1.1) RTN) AP STOP)
+testExec "(6 3 (1 (0.0) 21) 7)" "((B C))" "(B C)" // (DUM LDF (LD (0.0) STOP) RAP)
 
-Console.ReadLine () |> ignore
+// from appendix of Functional Programming - Application and Implementation, Peter Henderson 
+let compilerSource = "(LETREC COMPILE (COMPILE LAMBDA (E) (COMP E (QUOTE NIL) (QUOTE (4 21)))) (COMP LAMBDA (E N C) (IF (ATOM E) (CONS (QUOTE 1) (CONS (LOCATION E N) C)) (IF (EQ (CAR E) (QUOTE QUOTE)) (CONS (QUOTE 2) (CONS (CAR (CDR E)) C)) (IF (EQ (CAR E) (QUOTE ADD)) (COMP (CAR (CDR E)) N (COMP (CAR (CDR (CDR E))) N (CONS (QUOTE 15) C))) (IF (EQ (CAR E) (QUOTE SUB)) (COMP (CAR (CDR E)) N (COMP (CAR (CDR (CDR E))) N (CONS (QUOTE 16) C))) (IF (EQ (CAR E) (QUOTE MUL)) (COMP (CAR (CDR E)) N (COMP (CAR (CDR (CDR E))) N (CONS (QUOTE 17) C))) (IF (EQ (CAR E) (QUOTE DIV)) (COMP (CAR (CDR E)) N (COMP (CAR (CDR (CDR E))) N (CONS (QUOTE 18) C))) (IF (EQ (CAR E) (QUOTE REM)) (COMP (CAR (CDR E)) N (COMP (CAR (CDR (CDR E))) N (CONS (QUOTE 19) C))) (IF (EQ (CAR E) (QUOTE LEQ)) (COMP (CAR (CDR E)) N (COMP (CAR (CDR (CDR E))) N (CONS (QUOTE 20) C))) (IF (EQ (CAR E) (QUOTE EQ)) (COMP (CAR (CDR E)) N (COMP (CAR (CDR (CDR E))) N (CONS (QUOTE 14) C))) (IF (EQ (CAR E) (QUOTE CAR)) (COMP (CAR (CDR E)) N (CONS (QUOTE 10) C)) (IF (EQ (CAR E) (QUOTE CDR)) (COMP (CAR (CDR E)) N (CONS (QUOTE 11) C)) (IF (EQ (CAR E) (QUOTE ATOM)) (COMP (CAR (CDR E)) N (CONS (QUOTE 12) C)) (IF (EQ (CAR E) (QUOTE CONS)) (COMP (CAR (CDR (CDR E))) N (COMP (CAR (CDR E)) N (CONS (QUOTE 13) C))) (IF (EQ (CAR E) (QUOTE IF)) (LET (COMP (CAR (CDR E)) N (CONS (QUOTE 8) (CONS THENPT (CONS ELSEPT C)))) (THENPT COMP (CAR (CDR (CDR E))) N (QUOTE (9))) (ELSEPT COMP (CAR (CDR (CDR (CDR E)))) N (QUOTE (9)))) (IF (EQ (CAR E) (QUOTE LAMBDA)) (LET (CONS (QUOTE 3) (CONS BODY C)) (BODY COMP (CAR (CDR (CDR E))) (CONS (CAR (CDR E)) N) (QUOTE (5)))) (IF (EQ (CAR E) (QUOTE LET)) (LET (LET (COMPLIS ARGS N (CONS (QUOTE 3) (CONS BODY (CONS (QUOTE 4) C)))) (BODY COMP (CAR (CDR E)) M (QUOTE (5)))) (M CONS (VARS (CDR (CDR E))) N) (ARGS EXPRS (CDR (CDR E)))) (IF (EQ (CAR E) (QUOTE LETREC)) (LET (LET (CONS (QUOTE 6) (COMPLIS ARGS M (CONS (QUOTE 3) (CONS BODY (CONS (QUOTE 7) C))))) (BODY COMP (CAR (CDR E)) M (QUOTE (5)))) (M CONS (VARS (CDR (CDR E))) N) (ARGS EXPRS (CDR (CDR E)))) (COMPLIS (CDR E) N (COMP (CAR E) N (CONS (QUOTE 4) C))))))))))))))))))))) (COMPLIS LAMBDA (E N C) (IF (EQ E (QUOTE NIL)) (CONS (QUOTE 2) (CONS (QUOTE NIL) C)) (COMPLIS (CDR E) N (COMP (CAR E) N (CONS (QUOTE 13) C))))) (LOCATION LAMBDA (E N) (LETREC (IF (MEMBER E (CAR N)) (CONS (QUOTE 0) (POSN E (CAR N))) (INCAR (LOCATION E (CDR N)))) (MEMBER LAMBDA (E N) (IF (EQ N (QUOTE NIL)) (QUOTE F) (IF (EQ E (CAR N)) (QUOTE T) (MEMBER E (CDR N))))) (POSN LAMBDA (E N) (IF (EQ E (CAR N)) (QUOTE 0) (ADD (QUOTE 1) (POSN E (CDR N))))) (INCAR LAMBDA (L) (CONS (ADD (QUOTE 1) (CAR L)) (CDR L))))) (VARS LAMBDA (D) (IF (EQ D (QUOTE NIL)) (QUOTE NIL) (CONS (CAR (CAR D)) (VARS (CDR D))))) (EXPRS LAMBDA (D) (IF (EQ D (QUOTE NIL)) (QUOTE NIL) (CONS (CDR (CAR D)) (EXPRS (CDR D))))))"
+let compilerCode = "(6 2 NIL 3 (1 (0.0) 2 NIL 14 8 (2 NIL 9) (2 NIL 1 (0.0) 11 13 1 (1.5) 4 1 (0.0) 10 11 13 9) 5) 13 3 (1 (0.0) 2 NIL 14 8 (2 NIL 9) (2 NIL 1 (0.0) 11 13 1 (1.4) 4 1 (0.0) 10 10 13 9) 5) 13 3 (6 2 NIL 3 (1 (0.0) 11 2 1 1 (0.0) 10 15 13 5) 13 3 (1 (0.0) 1 (0.1) 10 14 8 (2 0 9) (2 1 2 NIL 1 (0.1) 11 13 1 (0.0) 13 1 (1.1) 4 15 9) 5) 13 3 (1 (0.1) 2 NIL 14 8 (2 F 9) (1 (0.0) 1 (0.1) 10 14 8 (2 T 9) (2 NIL 1 (0.1) 11 13 1 (0.0) 13 1 (1.0) 4 9) 9) 5) 13 3 (2 NIL 1 (1.1) 10 13 1 (1.0) 13 1 (0.0) 4 8 (2 NIL 1 (1.1) 10 13 1 (1.0) 13 1 (0.1) 4 2 0 13 9) (2 NIL 2 NIL 1 (1.1) 11 13 1 (1.0) 13 1 (2.3) 4 13 1 (0.2) 4 9) 5) 7 5) 13 3 (1 (0.0) 2 NIL 14 8 (1 (0.2) 2 NIL 13 2 2 13 9) (2 NIL 2 NIL 1 (0.2) 2 13 13 13 1 (0.1) 13 1 (0.0) 10 13 1 (1.1) 4 13 1 (0.1) 13 1 (0.0) 11 13 1 (1.2) 4 9) 5) 13 3 (1 (0.0) 12 8 (1 (0.2) 2 NIL 1 (0.1) 13 1 (0.0) 13 1 (1.3) 4 13 2 1 13 9) (1 (0.0) 10 2 QUOTE 14 8 (1 (0.2) 1 (0.0) 11 10 13 2 2 13 9) (1 (0.0) 10 2 ADD 14 8 (2 NIL 2 NIL 1 (0.2) 2 15 13 13 1 (0.1) 13 1 (0.0) 11 11 10 13 1 (1.1) 4 13 1 (0.1) 13 1 (0.0) 11 10 13 1 (1.1) 4 9) (1 (0.0) 10 2 SUB 14 8 (2 NIL 2 NIL 1 (0.2) 2 16 13 13 1 (0.1) 13 1 (0.0) 11 11 10 13 1 (1.1) 4 13 1 (0.1) 13 1 (0.0) 11 10 13 1 (1.1) 4 9) (1 (0.0) 10 2 MUL 14 8 (2 NIL 2 NIL 1 (0.2) 2 17 13 13 1 (0.1) 13 1 (0.0) 11 11 10 13 1 (1.1) 4 13 1 (0.1) 13 1 (0.0) 11 10 13 1 (1.1) 4 9) (1 (0.0) 10 2 DIV 14 8 (2 NIL 2 NIL 1 (0.2) 2 18 13 13 1 (0.1) 13 1 (0.0) 11 11 10 13 1 (1.1) 4 13 1 (0.1) 13 1 (0.0) 11 10 13 1 (1.1) 4 9) (1 (0.0) 10 2 REM 14 8 (2 NIL 2 NIL 1 (0.2) 2 19 13 13 1 (0.1) 13 1 (0.0) 11 11 10 13 1 (1.1) 4 13 1 (0.1) 13 1 (0.0) 11 10 13 1 (1.1) 4 9) (1 (0.0) 10 2 LEQ 14 8 (2 NIL 2 NIL 1 (0.2) 2 20 13 13 1 (0.1) 13 1 (0.0) 11 11 10 13 1 (1.1) 4 13 1 (0.1) 13 1 (0.0) 11 10 13 1 (1.1) 4 9) (1 (0.0) 10 2 EQ 14 8 (2 NIL 2 NIL 1 (0.2) 2 14 13 13 1 (0.1) 13 1 (0.0) 11 11 10 13 1 (1.1) 4 13 1 (0.1) 13 1 (0.0) 11 10 13 1 (1.1) 4 9) (1 (0.0) 10 2 CAR 14 8 (2 NIL 1 (0.2) 2 10 13 13 1 (0.1) 13 1 (0.0) 11 10 13 1 (1.1) 4 9) (1 (0.0) 10 2 CDR 14 8 (2 NIL 1 (0.2) 2 11 13 13 1 (0.1) 13 1 (0.0) 11 10 13 1 (1.1) 4 9) (1 (0.0) 10 2 ATOM 14 8 (2 NIL 1 (0.2) 2 12 13 13 1 (0.1) 13 1 (0.0) 11 10 13 1 (1.1) 4 9) (1 (0.0) 10 2 CONS 14 8 (2 NIL 2 NIL 1 (0.2) 2 13 13 13 1 (0.1) 13 1 (0.0) 11 10 13 1 (1.1) 4 13 1 (0.1) 13 1 (0.0) 11 11 10 13 1 (1.1) 4 9) (1 (0.0) 10 2 IF 14 8 (2 NIL 2 NIL 2 (9) 13 1 (0.1) 13 1 (0.0) 11 11 11 10 13 1 (1.1) 4 13 2 NIL 2 (9) 13 1 (0.1) 13 1 (0.0) 11 11 10 13 1 (1.1) 4 13 3 (2 NIL 1 (1.2) 1 (0.1) 13 1 (0.0) 13 2 8 13 13 1 (1.1) 13 1 (1.0) 11 10 13 1 (2.1) 4 5) 4 9) (1 (0.0) 10 2 LAMBDA 14 8 (2 NIL 2 NIL 2 (5) 13 1 (0.1) 1 (0.0) 11 10 13 13 1 (0.0) 11 11 10 13 1 (1.1) 4 13 3 (1 (1.2) 1 (0.0) 13 2 3 13 5) 4 9) (1 (0.0) 10 2 LET 14 8 (2 NIL 2 NIL 1 (0.0) 11 11 13 1 (1.5) 4 13 1 (0.1) 2 NIL 1 (0.0) 11 11 13 1 (1.4) 4 13 13 3 (2 NIL 2 NIL 2 (5) 13 1 (0.0) 13 1 (1.0) 11 10 13 1 (2.1) 4 13 3 (2 NIL 1 (2.2) 2 4 13 1 (0.0) 13 2 3 13 13 1 (2.1) 13 1 (1.1) 13 1 (3.2) 4 5) 4 5) 4 9) (1 (0.0) 10 2 LETREC 14 8 (2 NIL 2 NIL 1 (0.0) 11 11 13 1 (1.5) 4 13 1 (0.1) 2 NIL 1 (0.0) 11 11 13 1 (1.4) 4 13 13 3 (2 NIL 2 NIL 2 (5) 13 1 (0.0) 13 1 (1.0) 11 10 13 1 (2.1) 4 13 3 (2 NIL 1 (2.2) 2 7 13 1 (0.0) 13 2 3 13 13 1 (1.0) 13 1 (1.1) 13 1 (3.2) 4 2 6 13 5) 4 5) 4 9) (2 NIL 2 NIL 1 (0.2) 2 4 13 13 1 (0.1) 13 1 (0.0) 10 13 1 (1.1) 4 13 1 (0.1) 13 1 (0.0) 11 13 1 (1.2) 4 9) 9) 9) 9) 9) 9) 9) 9) 9) 9) 9) 9) 9) 9) 9) 9) 9) 5) 13 3 (2 NIL 2 (4 21) 13 2 NIL 13 1 (0.0) 13 1 (1.1) 4 5) 13 3 (1 (0.0) 5) 7 4 21)"
+
+let compile source = sprintf "(%s)" source |> run compilerCode
+
+let testCompiler source expected = 
+    let result = compile source |> print
+    if result <> expected then printfn "!!!COMPILER ERROR!!!\nEXPECTED: %s\nRESULT: %s" expected result
+
+testCompiler "(QUOTE A)" "(2 A 4 21)" // (LDC A AP STOP)
+testCompiler "(CAR (QUOTE A))" "(2 A 10 4 21)" // (LDC A CAR AP STOP)
+testCompiler "(CDR (QUOTE A))" "(2 A 11 4 21)" // (LDC A CDR AP STOP)
+testCompiler "(ATOM (QUOTE A))" "(2 A 12 4 21)" // (LDC A ATOM AP STOP)
+testCompiler "(CONS (QUOTE A) (QUOTE B))" "(2 B 2 A 13 4 21)" // (LDC B LDC A CONS AP STOP)
+testCompiler "(ADD (QUOTE A) (QUOTE B))" "(2 A 2 B 15 4 21)" // (LDC A LDC B ADD AP STOP)
+testCompiler "(SUB (QUOTE A) (QUOTE B))" "(2 A 2 B 16 4 21)" // (LDC A LDC B SUB AP STOP)
+testCompiler "(MUL (QUOTE A) (QUOTE B))" "(2 A 2 B 17 4 21)" // (LDC A LDC B MUL AP STOP)
+testCompiler "(DIV (QUOTE A) (QUOTE B))" "(2 A 2 B 18 4 21)" // (LDC A LDC B DIV AP STOP)
+testCompiler "(REM (QUOTE A) (QUOTE B))" "(2 A 2 B 19 4 21)" // (LDC A LDC B REM AP STOP)
+testCompiler "(EQ (QUOTE A) (QUOTE B))" "(2 A 2 B 14 4 21)" // (LDC A LDC B EQ AP STOP)
+testCompiler "(LEQ (QUOTE A) (QUOTE B))" "(2 A 2 B 20 4 21)" // (LDC A LDC B LEQ AP STOP)
+testCompiler "(LAMBDA (X) (QUOTE A))" "(3 (2 A 5) 4 21)" // (LDF (LDC A RTN) AP STOP)
+testCompiler "(LAMBDA (X) X)" "(3 (1 (0.0) 5) 4 21)" // (LDF (LD (0.0) RTN) AP STOP)
+testCompiler "(LAMBDA (X Y) Y)" "(3 (1 (0.1) 5) 4 21)" // (LDF (LD (0.1) RTN) AP STOP)
+testCompiler "((LAMBDA (X) X) (QUOTE A))" "(2 NIL 2 A 13 3 (1 (0.0) 5) 4 4 21)" // (LDC NIL LDC A CONS LDF (LD (0.0) RTN) AP AP STOP)
+testCompiler "(LET X (X QUOTE A))" "(2 NIL 2 A 13 3 (1 (0.0) 5) 4 4 21)" // (LDC NIL LDC A CONS LDF (LD (0.0) RTN) AP AP STOP)
+testCompiler "(LETREC X (X QUOTE A))" "(6 2 NIL 2 A 13 3 (1 (0.0) 5) 7 4 21)" // (DUM LDC NIL LDC A CONS LDF (LD (0.0) RTN) RAP AP STOP)
+testCompiler "(IF (QUOTE A) (QUOTE B) (QUOTE C))" "(2 A 8 (2 B 9) (2 C 9) 4 21)" // (LDC A SEL (LDC B JOIN) (LDC C JOIN) AP STOP)
+
+// ultimate test, compile the compiler - metecircularity baby!
+testCompiler compilerSource compilerCode
+
+let rec repl output = 
+    printf "%s\n> " output 
+    try exec (Console.ReadLine() |> compile) (tokenize "((42))" |> parse) |> print |> repl 
+    with ex -> repl ex.Message
+
+repl "Welcome to Lispkit Lisp"

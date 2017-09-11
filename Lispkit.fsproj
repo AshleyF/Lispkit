@@ -55,8 +55,6 @@
   <Import Project="$(FSharpTargetsPath)" />
   <ItemGroup>
     <Compile Include="Program.fs" />
-    <None Include="Compiler.lisp" />
-    <None Include="Compiler.secd" />
   </ItemGroup>
   <ItemGroup>
     <Reference Include="mscorlib" />
