@@ -22,11 +22,13 @@ let tokenize source =
 
 // parser
 
-type Cell = { mutable Left: Expression; Right: Expression } // this uglyness (record with `mutable Left`) is needed to allow in-place environment update
+type Cell = { mutable Head: Expression; Tail: Expression } // this uglyness (record with `mutable Head`) is needed to allow in-place environment update
 and Expression =
     | Sym of string
     | Num of int
     | Cons of Cell
+let cons h t = Cons { Head = h; Tail = t }
+let nil = Sym "NIL"
 
 let parse tokens =
     let rec parse' = function
@@ -41,10 +43,10 @@ let parse tokens =
         match tokens' with
         | Delimiter '.' :: t ->
             match parse' t with
-            | tail, (Delimiter ')' :: tokens'') ->  Cons { Left = head; Right = tail }, tokens''
+            | tail, (Delimiter ')' :: tokens'') -> cons head tail, tokens''
             | _ -> failwith "Unexpected expression following dotted pair"
-        | Delimiter ')' :: t -> Cons { Left = head; Right = Sym "NIL" }, t
-        | h :: t -> let lst, t' = parseList t in Cons { Left = head; Right = lst }, t'
+        | Delimiter ')' :: t -> cons head nil, t
+        | h :: t -> let lst, t' = parseList t in cons head lst, t'
         | [] -> failwith "Unexpected end of list expression"
     match tokens |> List.ofSeq |> parse' with
     | parsed, [End] -> parsed
@@ -59,12 +61,12 @@ let print expression =
             match exp with
             | Sym s -> s :: out
             | Num n -> sprintf "%i" n :: out
-            | Cons { Left = h; Right = Cons c } ->
+            | Cons { Head = h; Tail = Cons c } ->
                 let p = print' j [] false h
                 let p' = print' j [] true (Cons c)
                 p' @ " " :: p @ [(if comp then "" else "(")] @ out
-            | Cons { Left = h; Right = Sym "NIL" } -> let p = print' j [] false h in (")" :: p @ [(if comp then "" else "(")] @ out)
-            | Cons { Left = h; Right = d } -> let p, p' = print' j [] false h, print' j [] false d in ")" :: p' @ ["."] @ p @ [(if comp then "" else "(")] @ out
+            | Cons { Head = h; Tail = Sym "NIL" } -> let p = print' j [] false h in (")" :: p @ [(if comp then "" else "(")] @ out)
+            | Cons { Head = h; Tail = d } -> let p, p' = print' j [] false h, print' j [] false d in ")" :: p' @ ["."] @ p @ [(if comp then "" else "(")] @ out
         else "..." :: out
     print' 10000 [] false expression |> Seq.rev |> String.Concat
 
@@ -73,32 +75,32 @@ let print expression =
 let exec exp args =
     let rec exec' s e c d =
         // printfn "DEBUG: S=%s E=%s C=%s D=%s" (print s) (print e) (print c) (print d)
-        let rec nth i = function Cons { Left = e'; Right = e } -> (if i > 0 then nth (i - 1) e else e') | _ -> failwith "Invalid environment state"
-        let rplaca e v = match e with Cons e' -> e'.Left <- v; Cons e' | _ -> failwith "Invalid environment" // note: this is the *only* mutation
+        let rec nth i = function Cons { Head = e'; Tail = e } -> (if i > 0 then nth (i - 1) e else e') | _ -> failwith "Invalid environment state"
+        let rplaca e v = match e with Cons e' -> e'.Head <- v; Cons e' | _ -> failwith "Invalid environment" // note: this is the *only* mutation
         match (s, e, c, d) with 
-        | s, e, Cons { Left = Num 1 (* LD *); Right = Cons { Left = Cons { Left = Num n; Right = Num m }; Right = c }}, d -> exec' (Cons { Left = nth m (nth n e); Right = s }) e c d
-        | s, e, Cons { Left = Num 2 (* LDC *); Right = Cons { Left = x; Right = c }}, d -> exec' (Cons { Left = x; Right = s }) e c d
-        | s, e, Cons { Left = Num 3 (* LDF *); Right = Cons { Left = c'; Right = c }}, d -> exec' (Cons { Left = Cons { Left = c'; Right = e }; Right = s }) e c d
-        | Cons { Left = Cons { Left = c'; Right = e' }; Right = Cons { Left = v; Right = s }}, e, Cons { Left = Num 4 (* AP *); Right = c }, d -> exec' (Sym "NIL") (Cons { Left = v; Right = e' }) c' (Cons { Left = s; Right = Cons { Left = e; Right = Cons { Left = c; Right = d }}})
-        | Cons { Left = r; Right = Sym "NIL" }, _, Cons { Left = Num 5 (* RTN *); Right = Sym "NIL" }, (Cons { Left = s; Right = Cons { Left = e; Right = Cons { Left = c; Right = d }}}) -> exec' (Cons { Left = r; Right = s }) e c d
-        | s, e, Cons { Left = Num 6 (* DUM *); Right = c }, d -> exec' s (Cons { Left = Sym "NIL"; Right = e }) c d
-        | (Cons { Left = Cons { Left = c'; Right = e' }; Right = Cons { Left = v; Right = s }}), (Cons { Left = Sym "NIL"; Right = e }), Cons { Left = Num 7 (* RAP *); Right = c }, d -> exec' (Sym "NIL") (rplaca e' v) c' (Cons { Left = s; Right = Cons { Left = e; Right = Cons { Left = c; Right = d }}})
-        | Cons { Left = x; Right = s }, e, Cons { Left = Num 8 (* SEL *); Right = Cons { Left = t; Right = Cons { Left = f; Right = c }}}, d -> exec' s e (if x = Sym "T" then t else f) (Cons { Left = c; Right = d })
-        | s, e, Cons { Left = Num 9 (* JOIN *); Right = Sym "NIL" }, (Cons { Left = c; Right = d }) -> exec' s e c d
-        | Cons { Left = Cons { Left = x; Right = _ }; Right = s }, e, Cons { Left = Num 10 (* CAR *); Right = c }, d -> exec' (Cons { Left = x; Right = s }) e c d
-        | Cons { Left = Cons { Left = _; Right = x }; Right = s }, e, Cons { Left = Num 11 (* CDR *); Right = c }, d -> exec' (Cons { Left = x; Right = s }) e c d
-        | Cons { Left = x; Right = s }, e, Cons { Left = Num 12 (* ATOM *); Right = c }, d -> exec' (Cons { Left = Sym (match x with Sym _ | Num _ -> "T" | _ -> "F"); Right = s }) e c d
-        | Cons { Left = h; Right = Cons { Left = t; Right = s }}, e, Cons { Left = Num 13 (* CONS *); Right = c }, d -> exec' (Cons { Left = Cons { Left = h; Right = t }; Right = s }) e c d
-        | Cons { Left = x; Right = Cons { Left = y; Right = s }}, e, Cons { Left = Num 14 (* EQ *); Right = c }, d -> exec' (Cons { Left = Sym (if y = x then "T" else "F"); Right = s }) e c d
-        | Cons { Left = Num x; Right = Cons { Left = Num y; Right = s }}, e, Cons { Left = Num 15 (* ADD *); Right = c }, d -> exec' (Cons { Left = Num (y + x); Right = s }) e c d
-        | Cons { Left = Num x; Right = Cons { Left = Num y; Right = s }}, e, Cons { Left = Num 16 (* SUB *); Right = c }, d -> exec' (Cons { Left = Num (y - x); Right = s }) e c d
-        | Cons { Left = Num x; Right = Cons { Left = Num y; Right = s }}, e, Cons { Left = Num 17 (* MUL *); Right = c }, d -> exec' (Cons { Left = Num (y * x); Right = s }) e c d
-        | Cons { Left = Num x; Right = Cons { Left = Num y; Right = s }}, e, Cons { Left = Num 18 (* DIV *); Right = c }, d -> exec' (Cons { Left = Num (y / x); Right = s }) e c d
-        | Cons { Left = Num x; Right = Cons { Left = Num y; Right = s }}, e, Cons { Left = Num 19 (* REM *); Right = c }, d -> exec' (Cons { Left = Num (y % x); Right = s }) e c d
-        | Cons { Left = Num x; Right = Cons { Left = Num y; Right = s }}, e, Cons { Left = Num 20 (* LEQ *); Right = c }, d -> exec' (Cons { Left = Sym (if y <= x then "T" else "F"); Right = s }) e c d
-        | Cons { Left = r; Right = _ }, _, Cons { Left = Num 21 (* STOP *); Right = Sym "NIL" }, _ -> r
+        | s, e, Cons { Head = Num 1 (* LD *); Tail = Cons { Head = Cons { Head = Num n; Tail = Num m }; Tail = c }}, d -> exec' (cons (nth m (nth n e)) s) e c d
+        | s, e, Cons { Head = Num 2 (* LDC *); Tail = Cons { Head = x; Tail = c }}, d -> exec' (cons x s) e c d
+        | s, e, Cons { Head = Num 3 (* LDF *); Tail = Cons { Head = c'; Tail = c }}, d -> exec' (cons (cons c' e) s) e c d
+        | Cons { Head = Cons { Head = c'; Tail = e' }; Tail = Cons { Head = v; Tail = s }}, e, Cons { Head = Num 4 (* AP *); Tail = c }, d -> exec' nil (cons v e') c' (cons s (cons e (cons c d)))
+        | Cons { Head = r; Tail = Sym "NIL" }, _, Cons { Head = Num 5 (* RTN *); Tail = Sym "NIL" }, (Cons { Head = s; Tail = Cons { Head = e; Tail = Cons { Head = c; Tail = d }}}) -> exec' (cons r s) e c d
+        | s, e, Cons { Head = Num 6 (* DUM *); Tail = c }, d -> exec' s (cons nil e) c d
+        | (Cons { Head = Cons { Head = c'; Tail = e' }; Tail = Cons { Head = v; Tail = s }}), (Cons { Head = Sym "NIL"; Tail = e }), Cons { Head = Num 7 (* RAP *); Tail = c }, d -> exec' nil (rplaca e' v) c' (cons s (cons e (cons c d)))
+        | Cons { Head = x; Tail = s }, e, Cons { Head = Num 8 (* SEL *); Tail = Cons { Head = t; Tail = Cons { Head = f; Tail = c }}}, d -> exec' s e (if x = Sym "T" then t else f) (cons c d)
+        | s, e, Cons { Head = Num 9 (* JOIN *); Tail = Sym "NIL" }, (Cons { Head = c; Tail = d }) -> exec' s e c d
+        | Cons { Head = Cons { Head = x; Tail = _ }; Tail = s }, e, Cons { Head = Num 10 (* CAR *); Tail = c }, d -> exec' (cons x s) e c d
+        | Cons { Head = Cons { Head = _; Tail = x }; Tail = s }, e, Cons { Head = Num 11 (* CDR *); Tail = c }, d -> exec' (cons x s) e c d
+        | Cons { Head = x; Tail = s }, e, Cons { Head = Num 12 (* ATOM *); Tail = c }, d -> exec' (cons (Sym (match x with Sym _ | Num _ -> "T" | _ -> "F")) s) e c d
+        | Cons { Head = h; Tail = Cons { Head = t; Tail = s }}, e, Cons { Head = Num 13 (* CONS *); Tail = c }, d -> exec' (cons (cons h t) s) e c d
+        | Cons { Head = x; Tail = Cons { Head = y; Tail = s }}, e, Cons { Head = Num 14 (* EQ *); Tail = c }, d -> exec' (cons (Sym (if y = x then "T" else "F")) s) e c d
+        | Cons { Head = Num x; Tail = Cons { Head = Num y; Tail = s }}, e, Cons { Head = Num 15 (* ADD *); Tail = c }, d -> exec' (cons (Num (y + x)) s) e c d
+        | Cons { Head = Num x; Tail = Cons { Head = Num y; Tail = s }}, e, Cons { Head = Num 16 (* SUB *); Tail = c }, d -> exec' (cons (Num (y - x)) s) e c d
+        | Cons { Head = Num x; Tail = Cons { Head = Num y; Tail = s }}, e, Cons { Head = Num 17 (* MUL *); Tail = c }, d -> exec' (cons (Num (y * x)) s) e c d
+        | Cons { Head = Num x; Tail = Cons { Head = Num y; Tail = s }}, e, Cons { Head = Num 18 (* DIV *); Tail = c }, d -> exec' (cons (Num (y / x)) s) e c d
+        | Cons { Head = Num x; Tail = Cons { Head = Num y; Tail = s }}, e, Cons { Head = Num 19 (* REM *); Tail = c }, d -> exec' (cons (Num (y % x)) s) e c d
+        | Cons { Head = Num x; Tail = Cons { Head = Num y; Tail = s }}, e, Cons { Head = Num 20 (* LEQ *); Tail = c }, d -> exec' (cons (Sym (if y <= x then "T" else "F")) s) e c d
+        | Cons { Head = r; Tail = _ }, _, Cons { Head = Num 21 (* STOP *); Tail = Sym "NIL" }, _ -> r
         | _ -> failwith "Invalid machine state"
-    exec' (Cons { Left = args; Right = Sym "NIL" }) (Sym "NIL") exp (Sym "NIL")
+    exec' (Cons { Head = args; Tail = nil }) nil exp nil
 
 let run exp args = exec (exp |> tokenize |> parse) (args |> tokenize |> parse)
 
@@ -204,4 +206,4 @@ let rec repl output =
     try exec (Console.ReadLine() |> compile) (tokenize "((42))" |> parse) |> print |> repl 
     with ex -> repl ex.Message
 
-repl "Welcome to Lispkit Lisp"
+repl "Welcome to Lispkit Lisp\n\nExample: (LETREC TEST (TEST LAMBDA (X) (CONS (QUOTE HELLO) (QUOTE WORLD))))\n"
